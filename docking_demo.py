@@ -11,8 +11,6 @@ from yaml.loader import SafeLoader
 from hello_helpers import hello_misc as hm
 import argparse
 import loop_timer as lt
-from stretch_body import robot_params
-from stretch_body import hello_utils as hu
 import pprint as pp
 
 def compute_visual_servoing_features(center_xyz, midline_xyz, camera_info):
@@ -53,52 +51,6 @@ def display_visual_servoing_features(center_xy, midline_xy, image, color=None, l
     start = center
     end = np.round(center_xy + (length * midline_xy)).astype(np.int32)
     cv2.line(image, start, end, color, thickness, lineType=cv2.LINE_AA)
-    
-
-def draw_origin(image, camera_info, origin_xyz, color):
-    radius = 6
-    thickness = -1
-    center = np.round(dh.pixel_from_3d(origin_xyz, camera_info)).astype(np.int32)
-    cv2.circle(image, center, radius, color, -1, lineType=cv2.LINE_AA)
-
-def draw_line(image, camera_info, start_xyz, end_xyz, color):
-    radius = 6
-    thickness = 2
-    start = np.round(dh.pixel_from_3d(start_xyz, camera_info)).astype(np.int32)
-    end = np.round(dh.pixel_from_3d(end_xyz, camera_info)).astype(np.int32)
-    cv2.line(image, start, end, color, thickness, lineType=cv2.LINE_AA)
-    
-def draw_text(image, origin, text_lines):
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_size = 0.5
-    location = origin + np.array([0, -55])
-    location = location.astype(np.int32)
-        
-    for i, line in enumerate(text_lines):
-        text_size = cv2.getTextSize(line, font, font_size, 4)
-        (text_width, text_height), text_baseline = text_size
-        center = int(text_width / 2)
-        offset = np.array([-center, i * (1.7*text_height)]).astype(np.int32)
-        cv2.putText(image, line, location + offset, font, font_size, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(image, line, location + offset, font, font_size, (255, 255, 255), 1, cv2.LINE_AA)
-
-def get_dxl_joint_limits(joint):
-    # method to get dynamixel joint limits in radians from robot params
-    # Refer https://github.com/hello-robot/stretch_body/blob/master/body/stretch_body/dynamixel_hello_XL430.py#L1196:L1199
-
-    range_t = robot_params.RobotParams().get_params()[1][joint]['range_t']
-    flip_encoder_polarity = robot_params.RobotParams().get_params()[1][joint]['flip_encoder_polarity']
-    gr = robot_params.RobotParams().get_params()[1][joint]['gr']
-    zero_t = robot_params.RobotParams().get_params()[1][joint]['zero_t']
-
-    polarity = -1.0 if flip_encoder_polarity else 1.0
-    range_rad = []
-    for t in range_t:
-        x = t - zero_t
-        rad_world = polarity*hu.deg_to_rad((360.0 * x / 4096.0))/gr
-        range_rad.append(rad_world)
-    return range_rad
-
 
 def vector_error(target, current):
     err_mag = 1.0 - np.dot(target, current)
@@ -125,7 +77,7 @@ successful_pan_err = 0.2
 pre_docking_distance_m = 0.55 #0.63 #0.5
 
 ####################################
-## Gains for Reach Behavior
+## Gains for Visual Servoing
 
 overall_visual_servoing_velocity_scale = 0.02 #0.01 #1.0
 
@@ -141,17 +93,16 @@ joint_visual_servoing_velocity_scale = {
 joint_state_center = {
     'head_pan_pos': -np.pi,
     'head_tilt_pos': (-np.pi/2.0) + (np.pi/10.0), 
-    'lift_pos' : 0.3, #0.25, #0.2,
+    'lift_pos' : 0.3,
     'arm_pos': 0.01,
     'wrist_yaw_pos': (np.pi * (3.5/4.0)),
-#    'wrist_yaw_pos': 0.0,
-    'wrist_pitch_pos': 0.0, #-0.6
+    'wrist_pitch_pos': 0.0,
     'wrist_roll_pos': 0.0,
     'gripper_pos': 10.46
 }
 
 ####################################
-## Allowed Range of Motion
+## Allowed Ranges of Motion
 
 min_joint_state = {
     'base_odom_theta' : -100.0, #-0.8,
@@ -213,13 +164,13 @@ def recenter_robot(robot):
     robot.wait_command()
         
 
-def main(use_yolo, use_remote_computer, exposure):
+def main(exposure):
 
     try:
         pix_per_m_av = None
         pix_per_m_n = 0
         
-        camera = dc.D435i()
+        camera = dc.D435i(exposure=exposure)
 
         time.sleep(1.0)
         
@@ -288,6 +239,7 @@ def main(use_yolo, use_remote_computer, exposure):
             if behavior == 'drive_backwards':
                 print('drive_backwards!')
                 battery_charging = joint_state['battery_charging']
+                print()
                 print(f'{battery_charging=}')
                 if battery_charging:
                     print('FINISHED DOCKING!')
@@ -329,23 +281,6 @@ def main(use_yolo, use_remote_computer, exposure):
 
                     display_visual_servoing_features(pre_docking_center_xy, pre_docking_midline_xy, color_image)
 
-                    if False: 
-                        # find rotation to make the base midline orthogonal to the dock midline
-                        proj_mag = np.dot(base_midline_xy, dock_midline_xy)
-                        orth_vec = None
-                        if abs(proj_mag) > 0.0: 
-                            orth_vec = base_midline_xy - (proj_mag * dock_midline_xy)
-                            orth_vec_mag = np.linalg.norm(orth_vec)
-                            if orth_vec_mag > 0.0:
-                                orth_vec = orth_vec / orth_vec_mag
-                            else:
-                                orth_vec = None
-                        if (orth_vec is not None) and (base_midline_xy is not None):
-                            orth_err = np.dot(orth_vec, base_midline_xy)
-                            print(f'{orth_err=}')
-
-                        display_visual_servoing_features(base_center_xy, orth_vec, color_image)
-
                     # find error to the pre-docking waypoint location
                     direction = pre_docking_center_xy - base_center_xy
 
@@ -384,7 +319,8 @@ def main(use_yolo, use_remote_computer, exposure):
                     if abs(direction_err) < successful_rotate_err_ang:
                         direction_err = 0.0
                         behavior = 'drive_backwards'
-                    
+
+            print()
             print('visual servoing errors')
             print(f'{direction_err=}')
             print(f'{distance_err=}')
@@ -406,7 +342,6 @@ def main(use_yolo, use_remote_computer, exposure):
             cmd['base_counterclockwise'] = base_rotational_velocity
             cmd['head_pan_counterclockwise'] = head_pan_velocity 
 
-            print()
             print('cmd before scaling velocities')
             pp.pprint(cmd)
 
@@ -432,8 +367,6 @@ def main(use_yolo, use_remote_computer, exposure):
             if print_timing: 
                 loop_timer.pretty_print()
 
-        robot.stop()
-
     finally:
 
         robot.stop()
@@ -442,23 +375,17 @@ if __name__ == '__main__':
 
     
     parser = argparse.ArgumentParser(
-        prog='Stretch 3 Visual Servoing Demo',
-        description='This application provides a demonstration of interactive grasping using visual servoing and the gripper-mounted D405.',
-    )
-    parser.add_argument('-y', '--yolo', action='store_true', help = 'Receive task-relevant features for visual servoing from an external process using YOLOv8. The default is to servo to a cube with an ArUco marker with a single process using OpenCV. To use YOLOv8, you will need to use this option. You will also need to run send_d405_images.py and recv_and_yolo_d405_images.py. Prior to using this option, configure the network with the file yolo_networking.py.')
+        prog='Stretch 3 Docking Demo',
+        description='This application provides a demonstration of using visual servoing to autonomously dock with the official Hello Robot docking station.')
+  
 
-    parser.add_argument('-r', '--remote', action='store_true', help = 'Use this argument when allowing a remote computer to send task-relevant information for visual servoing, such as 3D positions for the fingertips and target objects. Prior to using this option, configure the network with the file yolo_networking.py.')
-
-    parser.add_argument('-e', '--exposure', action='store', type=str, default='low', help=f'Set the D405 exposure to {dh.exposure_keywords} or an integer in the range {dh.exposure_range}') 
+    parser.add_argument('-e', '--exposure', action='store', type=str, default='auto', help=f'Set the D435 exposure to {dh.exposure_keywords} or an integer in the range {dh.exposure_range}') 
             
     
     args = parser.parse_args()
-    use_yolo = args.yolo
-    use_remote_computer = args.remote
-
     exposure = args.exposure
 
     if not dh.exposure_argument_is_valid(exposure):
         raise argparse.ArgumentTypeError(f'The provided exposure setting, {exposure}, is not a valide keyword, {dh.exposure_keywords}, or is outside of the allowed numeric range, {dh.exposure_range}.')    
     
-    main(use_yolo, use_remote_computer, exposure)
+    main(exposure)
