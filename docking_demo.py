@@ -58,6 +58,56 @@ def vector_error(target, current):
     err = err_sign * err_mag
     return err
 
+def get_pix_per_m(camera_info):
+    # Set the pixel per meter conversion value for the
+    # current image resolution. Success is sensitive
+    # to this value, so it's better to set it to a
+    # constant value instead of estimating it from the
+    # ArUco markers.
+
+    # PLEASE NOTE THAT THIS IS AN APPROXIMATION THAT DOES NOT TAKE
+    # INTO ACCOUNT THE TILT OF THE CAMERA AND THUS DOES NOT ACCOUNT
+    # FOR VARIATION ACROSS THE IMAGE DUE TO THE FLOOR PLANE BEING AT
+    # AN ANGLE RELATIVE TO THE IMAGE.
+    
+    fx = camera_info['camera_matrix'][0,0]
+    pix_per_m = fx * (1050.0/1362.04443)
+    print(f'{fx=}')
+    print(f'{pix_per_m=}')
+    return pix_per_m
+
+def pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m):
+    # find the pre-docking waypoint
+    dist_pix = pix_per_m * pre_docking_distance_m
+    pre_docking_center_xy = dock_center_xy + (dist_pix * dock_midline_xy)
+    return pre_docking_center_xy
+
+def docking_pose(base_center_xy, base_midline_xy, dock_center_xy, dock_midline_xy, pix_per_m):
+    pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
+    
+    center_diff_xy = base_center_xy - pre_docking_center_xy
+    dock_side_sign = np.sign(np.cross(dock_midline_xy, center_diff_xy))
+    if dock_side_sign < 0.0:
+        left_of_dock = False
+    else:
+        left_of_dock = True
+
+    center_diff_xy = dock_center_xy - base_center_xy
+    center_diff_xy = center_diff_xy / np.linalg.norm(center_diff_xy)
+    if left_of_dock:
+        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, base_midline_xy))
+        facing_sign = np.dot(base_midline_xy, dock_midline_xy)
+    else: 
+        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, -base_midline_xy))
+        facing_sign = np.dot(-base_midline_xy, dock_midline_xy)
+
+    if (facing_sign > 0.0) and (abs_direction_err < (1.0 - np.cos(np.pi/2.0))):
+        facing_dock = True
+    else:
+        facing_dock = False
+        
+    return facing_dock, left_of_dock
+
 
 ####################################
 # Miscellaneous Parameters
@@ -191,17 +241,21 @@ def main(exposure):
         
         loop_timer = lt.LoopTimer()
 
-        behaviors = ['look_for_markers', 'pre_docking', 'rotate', 'drive_backwards', 'docked']
+        behaviors = ['look_for_markers', 'rotate_to_starting_pose', 'move_to_predocking_position', 'rotate_for_docking', 'back_into_dock', 'docked']
         behavior = 'look_for_markers'
-        
+        facing_dock = None
+        left_of_dock = None
+
         while behavior != 'docked':
             print('_______________________________________')
                             
             loop_timer.start_of_iteration()
 
             camera_info = camera.get_camera_info()
+            pix_per_m = get_pix_per_m(camera_info)
+            
             color_image = camera.get_image()
-
+                
             aruco_detector.update(color_image, camera_info)
 
             markers = aruco_detector.get_detected_marker_dict()
@@ -237,11 +291,18 @@ def main(exposure):
             print(f'{behavior=}')
                 
             if behavior == 'look_for_markers':
-                print('looking...')
                 pan_err = -2.0
                 if (base_center_xy is not None) and (base_midline_xy is not None) and (dock_center_xy is not None) and (dock_midline_xy is not None):
-                    behavior = 'pre_docking'
-            elif behavior == 'drive_backwards':
+                    facing_dock, left_of_dock = docking_pose(base_center_xy, base_midline_xy, dock_center_xy, dock_midline_xy, pix_per_m)
+                    print(f'{facing_dock=}')
+                    print(f'{left_of_dock=}')
+                    if not left_of_dock:
+                        raise NotImplementedError('THE DOCKING DEMO DOES NOT YET WORK WHEN DOCKING FROM THE RIGHT SIDE OF THE DOCKING STATION.')
+                    if facing_dock:
+                        behavior = 'move_to_predocking_position'
+                    else: 
+                        behavior = 'rotate_to_starting_pose'
+            elif behavior == 'back_into_dock':
                 battery_charging = joint_state['battery_charging']
                 print()
                 print(f'{battery_charging=}')
@@ -258,21 +319,25 @@ def main(exposure):
                 if abs(pan_err) < successful_pan_err:
                     pan_err = 0.0
 
-                if behavior == 'pre_docking':
-                    # find the pre-docking waypoint
+                if behavior == 'rotate_to_starting_pose':
+                    center_diff_xy = dock_center_xy - base_center_xy
+                    center_diff_xy = center_diff_xy / np.linalg.norm(center_diff_xy)
+                                                        
+                    if left_of_dock:
+                        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, base_midline_xy))
+                        direction_err = 1.0
+                    else:
+                        abs_direction_err = abs(1.0 - np.dot(-center_diff_xy, base_midline_xy))
+                        direction_err = -1.0
 
-                    # Set the pixel per meter conversion value for the
-                    # current image resolution. Success is sensitive
-                    # to this value, so it's better to set it to a
-                    # constant value instead of estimating it from the
-                    # ArUco markers.
-                    fx = camera_info['camera_matrix'][0,0]
-                    pix_per_m = fx * (1050.0/1362.04443)
-                    print(f'{fx=}')
-                    print(f'{pix_per_m=}')
-                    dist_pix = pix_per_m * pre_docking_distance_m
-
-                    pre_docking_center_xy = dock_center_xy + (dist_pix * dock_midline_xy)
+                    print(f'{abs_direction_err=}')
+                    if abs_direction_err < (1.0 - np.cos(np.pi/2.0)):
+                        direction_err = 0.0
+                        behavior = 'move_to_predocking_position'
+                        
+                        
+                if behavior == 'move_to_predocking_position':
+                    pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
                     pre_docking_midline_xy = dock_midline_xy
 
                     display_visual_servoing_features(pre_docking_center_xy, pre_docking_midline_xy, color_image)
@@ -288,31 +353,38 @@ def main(exposure):
 
                     distance_success = False
                     direction_success = False
+
+                    if left_of_dock: 
+                        distance_err = distance
+                    else:
+                        distance_err = -distance
                         
-                    distance_err = distance
                     if abs(distance_err) < (pix_per_m * successful_pre_docking_err_m):
                         distance_err = 0.0
                         distance_success = True
 
-                    if not distance_success: 
-                        direction_err = vector_error(direction, base_midline_xy)
+                    if not distance_success:
+                        if left_of_dock: 
+                            direction_err = vector_error(direction, base_midline_xy)
+                        else:
+                            direction_err = vector_error(direction, -base_midline_xy)
                         if (abs(direction_err) < successful_pre_docking_err_ang):
                             direction_err = 0.0
                             direction_success = True
                     else:
                         direction_err = 0.0
                         direction_success = True
-
+                        
                     if direction_success and distance_success:
-                        behavior = 'rotate'
+                        behavior = 'rotate_for_docking'
 
-                elif behavior == 'rotate':
+                elif behavior == 'rotate_for_docking':
                     # find rotational error to make the base midline parallel to the pre-docking direction
                     parallel_err = vector_error(-dock_midline_xy, base_midline_xy)
                     direction_err = 2.0 * parallel_err
                     if abs(direction_err) < successful_rotate_err_ang:
                         direction_err = 0.0
-                        behavior = 'drive_backwards'
+                        behavior = 'back_into_dock'
 
             print()
             print('visual servoing errors')
