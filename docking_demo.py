@@ -90,9 +90,9 @@ joint_visual_servoing_velocity_scale = {
 ####################################
 ## Initial Pose
 
-joint_state_center = {
-    'head_pan_pos': -np.pi,
-    'head_tilt_pos': (-np.pi/2.0) + (np.pi/10.0), 
+initial_joint_state = {
+    'head_pan_pos': -(np.pi + np.pi/4.0), #-np.pi,
+    'head_tilt_pos': (-np.pi/2.0) + (np.pi/14.0), #(-np.pi/2.0) + (np.pi/10.0), 
     'lift_pos' : 0.3,
     'arm_pos': 0.01,
     'wrist_yaw_pos': (np.pi * (3.5/4.0)),
@@ -140,26 +140,26 @@ vel_cmd_to_pos = { v:k for (k,v) in pos_to_vel_cmd.items() }
 ####################################
 
 
-def recenter_robot(robot):
-    robot.head.move_to('head_pan', joint_state_center['head_pan_pos'])
-    robot.head.move_to('head_tilt', joint_state_center['head_tilt_pos'])
+def move_to_initial_pose(robot):
+    robot.head.move_to('head_pan', initial_joint_state['head_pan_pos'])
+    robot.head.move_to('head_tilt', initial_joint_state['head_tilt_pos'])
     robot.push_command()
     robot.wait_command()
 
-    robot.end_of_arm.get_joint('wrist_yaw').move_to(joint_state_center['wrist_yaw_pos'])
-    robot.end_of_arm.get_joint('wrist_pitch').move_to(joint_state_center['wrist_pitch_pos'])
+    robot.end_of_arm.get_joint('wrist_yaw').move_to(initial_joint_state['wrist_yaw_pos'])
+    robot.end_of_arm.get_joint('wrist_pitch').move_to(initial_joint_state['wrist_pitch_pos'])
     robot.push_command()
     robot.wait_command()
 
-    robot.arm.move_to(joint_state_center['arm_pos'])
+    robot.arm.move_to(initial_joint_state['arm_pos'])
     robot.push_command()
     robot.wait_command()
 
-    robot.lift.move_to(joint_state_center['lift_pos'])
+    robot.lift.move_to(initial_joint_state['lift_pos'])
     robot.push_command()
     robot.wait_command()
 
-    robot.end_of_arm.get_joint('stretch_gripper').move_to(joint_state_center['gripper_pos'])
+    robot.end_of_arm.get_joint('stretch_gripper').move_to(initial_joint_state['gripper_pos'])
     robot.push_command()
     robot.wait_command()
         
@@ -176,7 +176,7 @@ def main(exposure):
         
         robot = rb.Robot()
         robot.startup()
-        recenter_robot(robot)
+        move_to_initial_pose(robot)
 
         marker_info = {}
         with open('aruco_marker_info.yaml') as f:
@@ -191,16 +191,15 @@ def main(exposure):
         
         loop_timer = lt.LoopTimer()
 
-        behaviors = ['pre_docking', 'rotate', 'drive_backwards', 'docked']
-        behavior = 'pre_docking'
+        behaviors = ['look_for_markers', 'pre_docking', 'rotate', 'drive_backwards', 'docked']
+        behavior = 'look_for_markers'
         
         while behavior != 'docked':
             print('_______________________________________')
                             
             loop_timer.start_of_iteration()
 
-            color_camera_info = camera.get_camera_info()
-            camera_info = color_camera_info
+            camera_info = camera.get_camera_info()
             color_image = camera.get_image()
 
             aruco_detector.update(color_image, camera_info)
@@ -227,7 +226,6 @@ def main(exposure):
             dock_center_xy, dock_midline_xy = compute_visual_servoing_features(dock_center_xyz, dock_midline_xyz, camera_info)
             display_visual_servoing_features(dock_center_xy, dock_midline_xy, color_image)
 
-
             direction_err = 0.0
             distance_err = 0.0
             pan_err = 0.0
@@ -235,9 +233,15 @@ def main(exposure):
             joint_state = controller.get_joint_state()
             # convert base odometry angle to be in the range -pi to pi
             joint_state['base_odom_theta'] = hm.angle_diff_rad(joint_state['base_odom_theta'], 0.0)
-            
-            if behavior == 'drive_backwards':
-                print('drive_backwards!')
+
+            print(f'{behavior=}')
+                
+            if behavior == 'look_for_markers':
+                print('looking...')
+                pan_err = -2.0
+                if (base_center_xy is not None) and (base_midline_xy is not None) and (dock_center_xy is not None) and (dock_midline_xy is not None):
+                    behavior = 'pre_docking'
+            elif behavior == 'drive_backwards':
                 battery_charging = joint_state['battery_charging']
                 print()
                 print(f'{battery_charging=}')
@@ -247,7 +251,6 @@ def main(exposure):
                 else:
                     distance_err = 100.0
             elif (base_center_xy is not None) and (base_midline_xy is not None) and (dock_center_xy is not None) and (dock_midline_xy is not None):
-                
                 pan_goal = dock_center_xy - base_center_xy
                 pan_goal = pan_goal / np.linalg.norm(pan_goal)
                 pan_curr = np.array([1.0, 0.0])
@@ -256,25 +259,18 @@ def main(exposure):
                     pan_err = 0.0
 
                 if behavior == 'pre_docking':
-                    print('pre_docking!')
-
                     # find the pre-docking waypoint
-                    start_xy = dh.pixel_from_3d(base_center_xyz, camera_info)
-                    end_xy = dh.pixel_from_3d(base_center_xyz + base_midline_xyz, camera_info)
-                    pix_per_m = np.linalg.norm(end_xy - start_xy)
-                    if False: 
-                        if pix_per_m_av is None:
-                            pix_per_m_av = pix_per_m
-                            pix_per_m_n = pix_per_m_n + 1
-                        else:
-                            pix_per_m_av = ((pix_per_m_av * pix_per_m_n) + pix_per_m) / (pix_per_m_n + 1.0)
-                            pix_per_m_n = pix_per_m_n + 1
-                    else:
-                        if pix_per_m_av is None: 
-                            pix_per_m_av = pix_per_m
 
-                    dist_pix = pix_per_m_av * pre_docking_distance_m
-                    print(f'{pix_per_m_av=}')
+                    # Set the pixel per meter conversion value for the
+                    # current image resolution. Success is sensitive
+                    # to this value, so it's better to set it to a
+                    # constant value instead of estimating it from the
+                    # ArUco markers.
+                    fx = camera_info['camera_matrix'][0,0]
+                    pix_per_m = fx * (1050.0/1362.04443)
+                    print(f'{fx=}')
+                    print(f'{pix_per_m=}')
+                    dist_pix = pix_per_m * pre_docking_distance_m
 
                     pre_docking_center_xy = dock_center_xy + (dist_pix * dock_midline_xy)
                     pre_docking_midline_xy = dock_midline_xy
@@ -294,7 +290,7 @@ def main(exposure):
                     direction_success = False
                         
                     distance_err = distance
-                    if abs(distance_err) < (pix_per_m_av * successful_pre_docking_err_m):
+                    if abs(distance_err) < (pix_per_m * successful_pre_docking_err_m):
                         distance_err = 0.0
                         distance_success = True
 
@@ -311,8 +307,6 @@ def main(exposure):
                         behavior = 'rotate'
 
                 elif behavior == 'rotate':
-                    print('rotate!')
-                        
                     # find rotational error to make the base midline parallel to the pre-docking direction
                     parallel_err = vector_error(-dock_midline_xy, base_midline_xy)
                     direction_err = 2.0 * parallel_err
@@ -372,15 +366,12 @@ def main(exposure):
         robot.stop()
 
 if __name__ == '__main__':
-
     
     parser = argparse.ArgumentParser(
         prog='Stretch 3 Docking Demo',
         description='This application provides a demonstration of using visual servoing to autonomously dock with the official Hello Robot docking station.')
-  
 
     parser.add_argument('-e', '--exposure', action='store', type=str, default='auto', help=f'Set the D435 exposure to {dh.exposure_keywords} or an integer in the range {dh.exposure_range}') 
-            
     
     args = parser.parse_args()
     exposure = args.exposure
