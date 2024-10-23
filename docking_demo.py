@@ -13,101 +13,6 @@ import argparse
 import loop_timer as lt
 import pprint as pp
 
-def compute_visual_servoing_features(center_xyz, midline_xyz, camera_info):
-    if (center_xyz is None) or (midline_xyz is None):
-        return None, None
-    
-    center_xy = dh.pixel_from_3d(center_xyz, camera_info)
-    
-    length = 1.0
-    end_xyz = center_xyz + (length * midline_xyz)
-    end_xy = dh.pixel_from_3d(end_xyz, camera_info)
-    
-    midline_xy = (end_xy - center_xy)
-    midline_xy_mag = np.linalg.norm(midline_xy)
-    if midline_xy_mag > 0.0:
-        midline_xy = midline_xy / midline_xy_mag
-    else:
-        midline_xy = None
-
-    return center_xy, midline_xy
-
-
-def display_visual_servoing_features(center_xy, midline_xy, image, color=None, length=100.0):
-    if (center_xy is None) or (midline_xy is None):
-        return
-
-    radius = 6
-    thickness = -1
-    if color is None:
-        color = [255, 255, 0]
-    center = np.round(center_xy).astype(np.int32)
-    cv2.circle(image, center, radius, color, -1, lineType=cv2.LINE_AA)
-
-    radius = 6
-    thickness = 2
-    if color is None: 
-        color = [255, 0, 0]
-    start = center
-    end = np.round(center_xy + (length * midline_xy)).astype(np.int32)
-    cv2.line(image, start, end, color, thickness, lineType=cv2.LINE_AA)
-
-def vector_error(target, current):
-    err_mag = 1.0 - np.dot(target, current)
-    err_sign = np.sign(np.cross(target, current))
-    err = err_sign * err_mag
-    return err
-
-def get_pix_per_m(camera_info):
-    # Set the pixel per meter conversion value for the
-    # current image resolution. Success is sensitive
-    # to this value, so it's better to set it to a
-    # constant value instead of estimating it from the
-    # ArUco markers.
-
-    # PLEASE NOTE THAT THIS IS AN APPROXIMATION THAT DOES NOT TAKE
-    # INTO ACCOUNT THE TILT OF THE CAMERA AND THUS DOES NOT ACCOUNT
-    # FOR VARIATION ACROSS THE IMAGE DUE TO THE FLOOR PLANE BEING AT
-    # AN ANGLE RELATIVE TO THE IMAGE.
-    
-    fx = camera_info['camera_matrix'][0,0]
-    pix_per_m = fx * (1050.0/1362.04443)
-    print(f'{fx=}')
-    print(f'{pix_per_m=}')
-    return pix_per_m
-
-def pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m):
-    # find the pre-docking waypoint
-    dist_pix = pix_per_m * pre_docking_distance_m
-    pre_docking_center_xy = dock_center_xy + (dist_pix * dock_midline_xy)
-    return pre_docking_center_xy
-
-def docking_pose(base_center_xy, base_midline_xy, dock_center_xy, dock_midline_xy, pix_per_m):
-    pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
-    
-    center_diff_xy = base_center_xy - pre_docking_center_xy
-    dock_side_sign = np.sign(np.cross(dock_midline_xy, center_diff_xy))
-    if dock_side_sign < 0.0:
-        left_of_dock = False
-    else:
-        left_of_dock = True
-
-    center_diff_xy = dock_center_xy - base_center_xy
-    center_diff_xy = center_diff_xy / np.linalg.norm(center_diff_xy)
-    if left_of_dock:
-        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, base_midline_xy))
-        facing_sign = np.dot(base_midline_xy, dock_midline_xy)
-    else: 
-        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, -base_midline_xy))
-        facing_sign = np.dot(-base_midline_xy, dock_midline_xy)
-
-    if (facing_sign > 0.0) and (abs_direction_err < (1.0 - np.cos(np.pi/2.0))):
-        facing_dock = True
-    else:
-        facing_dock = False
-        
-    return facing_dock, left_of_dock
-
 
 ####################################
 # Miscellaneous Parameters
@@ -121,7 +26,7 @@ min_base_speed = 0.0 #0.05
 
 successful_pre_docking_err_m = 0.01
 successful_pre_docking_err_ang = 0.05
-successful_rotate_err_ang = 0.01
+successful_rotate_err_ang = 0.008 #0.01
 successful_pan_err = 0.2
 
 pre_docking_distance_m = 0.55 #0.63 #0.5
@@ -188,6 +93,198 @@ pos_to_vel_cmd = {
 vel_cmd_to_pos = { v:k for (k,v) in pos_to_vel_cmd.items() }
 
 ####################################
+
+
+######################################
+# Naming conventions
+#
+# _marker_xyz is a three dimensional quantity derived from an ArUco marker
+# _xy is a two dimensional quantity defined with respect to the image
+#
+######################################
+
+def center_and_midline_in_image(center_marker_xyz, midline_marker_xyz, camera_info):
+    if (center_marker_xyz is None) or (midline_marker_xyz is None):
+        return None, None
+    
+    center_xy = dh.pixel_from_3d(center_marker_xyz, camera_info)
+    
+    length = 1.0
+    end_marker_xyz = center_marker_xyz + (length * midline_marker_xyz)
+    end_xy = dh.pixel_from_3d(end_marker_xyz, camera_info)
+    
+    midline_xy = (end_xy - center_xy)
+    midline_xy_mag = np.linalg.norm(midline_xy)
+    if midline_xy_mag > 0.0:
+        midline_xy = midline_xy / midline_xy_mag
+    else:
+        midline_xy = None
+
+    return center_xy, midline_xy
+
+
+def display_visual_servoing_features(center_xy, midline_xy, image, color=None, length=100.0):
+    if (center_xy is None) or (midline_xy is None):
+        return
+
+    radius = 6
+    thickness = -1
+    if color is None:
+        color = [255, 255, 0]
+    center = np.round(center_xy).astype(np.int32)
+    cv2.circle(image, center, radius, color, -1, lineType=cv2.LINE_AA)
+
+    radius = 6
+    thickness = 2
+    if color is None: 
+        color = [255, 0, 0]
+    start = center
+    end = np.round(center_xy + (length * midline_xy)).astype(np.int32)
+    cv2.line(image, start, end, color, thickness, lineType=cv2.LINE_AA)
+    
+
+def dock_coord_sys(dock_origin_marker_xyz, dock_x_axis_marker_xyz, dock_y_axis_marker_xyz,
+                   base_origin_marker_xyz, base_x_axis_marker_xyz, base_y_axis_marker_xyz, base_z_axis_marker_xyz):
+    
+    ####################################
+    # This estimates a planar coordinate system for the docking station that is used to define image-space objectives for visual servoing, including position way points.
+    #
+    # The origin of the coordinate system is the center of the docking station's ArUco marker.
+    #
+    # The x and y axes for the coordinate system sit in the plane defined by the x-axis for the docking station's ArUco marker and the vector that connects the center of the docking station's ArUco marker and the center of the mobile base's ArUco marker.
+    #
+    # The y-axis points along the midline of the docking station in the same direction as the charging connector.
+    #
+    # The x-axis points to the left of the docking station when you are looking at the ArUco marker from in front of the docking station.
+    #
+    # The x-axis and y-axis form a right-handed coordinate system where the z-axis is normal to the floor.
+    #
+    ####################################
+
+    if (((dock_origin_marker_xyz is None) or (dock_x_axis_marker_xyz is None) or (dock_y_axis_marker_xyz is None)) or
+        ((base_origin_marker_xyz is None)) or (base_x_axis_marker_xyz is None) or (base_y_axis_marker_xyz is None) or
+         (base_z_axis_marker_xyz is None)):
+        return None, None, None
+    
+    # The origin is the 3D origin of the docking station's ArUco marker
+    origin = np.copy(dock_origin_marker_xyz)
+
+    # The docking station's x-axis is the negative of the docking station's ArUco marker's x-axis
+    x_axis = -dock_x_axis_marker_xyz
+
+    # Find the docking station's y-axis by using its x-axis and the vector that connects the origins of the docking station's ArUco marker and the mobile base's ArUco marker. This should result in a less noisy estimate, as long as they are not parallel, which should be unlikely during docking and can be explicitly detected and excluded. 
+
+    diff = base_origin_marker_xyz - dock_origin_marker_xyz
+    diff_mag = np.linalg.norm(diff)
+    if diff_mag > 0.0: 
+        diff = diff / diff_mag
+
+        # Remove the component of diff that is non-orthogonal to the x-axis
+        y_axis = diff - (np.dot(diff, x_axis) * x_axis)
+        y_axis_mag = np.linalg.norm(y_axis)
+
+        if y_axis_mag > 0.0:
+            y_axis = y_axis / y_axis_mag
+        else:
+            y_axis = None
+    else:
+        y_axis = None
+
+    print(f'{origin=}, {x_axis=}, {y_axis=}')
+    return origin, x_axis, y_axis
+
+
+def display_dock_coord_sys(origin, x_axis, y_axis, image, camera_info):
+    if (origin is None) or (x_axis is None) or (y_axis is None):
+        return
+
+    # Draw origin
+    origin_xy = dh.pixel_from_3d(origin, camera_info)
+    radius = 6
+    thickness = -1
+    color = [255, 0, 0]
+    origin_xy = np.round(origin_xy).astype(np.int32)
+    cv2.circle(image, origin_xy, radius, color, -1, lineType=cv2.LINE_AA)
+
+    start_xy = origin_xy
+    length_m = 0.2
+    
+    # Draw x-axis in red
+    thickness = 2
+    color = [0, 0, 255]
+    end_xy = dh.pixel_from_3d(origin + (length_m * x_axis), camera_info)
+    end_xy = np.round(end_xy).astype(np.int32)
+    cv2.line(image, start_xy, end_xy, color, thickness, lineType=cv2.LINE_AA)
+    
+    # Draw y-axis in green
+    thickness = 2
+    color = [0, 255, 0]
+    end_xy = dh.pixel_from_3d(origin + (length_m * y_axis), camera_info)
+    end_xy = np.round(end_xy).astype(np.int32)
+    cv2.line(image, start_xy, end_xy, color, thickness, lineType=cv2.LINE_AA)
+    
+
+def pre_docking_center_2(dock_origin_marker_xyz, dock_y_axis_marker_xyz, camera_info):
+    pre_docking_center_marker_xyz = (pre_docking_distance_m * dock_y_axis_marker_xyz) + dock_origin_marker_xyz
+    pre_docking_center_xy = dh.pixel_from_3d(pre_docking_center_marker_xyz, camera_info)
+    return pre_docking_center_xy
+
+
+def vector_error(target, current):
+    err_mag = 1.0 - np.dot(target, current)
+    err_sign = np.sign(np.cross(target, current))
+    err = err_sign * err_mag
+    return err
+
+def get_pix_per_m(camera_info):
+    # Set the pixel per meter conversion value for the
+    # current image resolution. Success is sensitive
+    # to this value, so it's better to set it to a
+    # constant value instead of estimating it from the
+    # ArUco markers.
+
+    # PLEASE NOTE THAT THIS IS AN APPROXIMATION THAT DOES NOT TAKE
+    # INTO ACCOUNT THE TILT OF THE CAMERA AND THUS DOES NOT ACCOUNT
+    # FOR VARIATION ACROSS THE IMAGE DUE TO THE FLOOR PLANE BEING AT
+    # AN ANGLE RELATIVE TO THE IMAGE.
+    
+    fx = camera_info['camera_matrix'][0,0]
+    pix_per_m = fx * (1050.0/1362.04443)
+    print(f'{fx=}')
+    print(f'{pix_per_m=}')
+    return pix_per_m
+
+def pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m):
+    # find the pre-docking waypoint
+    dist_pix = pix_per_m * pre_docking_distance_m
+    pre_docking_center_xy = dock_center_xy + (dist_pix * dock_midline_xy)
+    return pre_docking_center_xy
+
+def docking_pose(base_center_xy, base_midline_xy, dock_center_xy, dock_midline_xy, pix_per_m):
+    pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
+    
+    center_diff_xy = base_center_xy - pre_docking_center_xy
+    dock_side_sign = np.sign(np.cross(dock_midline_xy, center_diff_xy))
+    if dock_side_sign < 0.0:
+        left_of_dock = False
+    else:
+        left_of_dock = True
+
+    center_diff_xy = dock_center_xy - base_center_xy
+    center_diff_xy = center_diff_xy / np.linalg.norm(center_diff_xy)
+    if left_of_dock:
+        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, base_midline_xy))
+        facing_sign = np.dot(base_midline_xy, dock_midline_xy)
+    else: 
+        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, -base_midline_xy))
+        facing_sign = np.dot(-base_midline_xy, dock_midline_xy)
+
+    if (facing_sign > 0.0) and (abs_direction_err < (1.0 - np.cos(np.pi/2.0))):
+        facing_dock = True
+    else:
+        facing_dock = False
+        
+    return facing_dock, left_of_dock
 
 
 def move_to_initial_pose(robot):
@@ -259,25 +356,53 @@ def main(exposure):
             aruco_detector.update(color_image, camera_info)
 
             markers = aruco_detector.get_detected_marker_dict()
-            base_center_xyz = None
-            base_midline_xyz = None
-            dock_center_xyz = None
-            dock_midline_xyz = None
+            base_center_marker_xyz = None
+            base_midline_marker_xyz = None
+            dock_center_marker_xyz = None
+            dock_midline_marker_xyz = None
+
+            base_origin_marker_xyz = None
+            base_x_axis_marker_xyz = None
+            base_y_axis_marker_xyz = None
+            base_z_axis_marker_xyz = None
+                   
+            dock_origin_marker_xyz = None
+            dock_x_axis_marker_xyz = None
+            dock_y_axis_marker_xyz = None
+            
             for k in markers:
                 m = markers[k]
                 name = m['info']['name']
                 if name == 'base_left':
-                    base_center_xyz = m['pos'] + ((0.13) * m['x_axis'])
-                    base_midline_xyz = -m['y_axis']
-                if name == 'docking_station':
-                    dock_center_xyz = m['pos']
-                    dock_midline_xyz = -m['y_axis']
+                    base_center_marker_xyz = m['pos'] + ((0.13) * m['x_axis'])
+                    base_midline_marker_xyz = -m['y_axis']
 
+                    base_origin_marker_xyz = np.copy(m['pos'])
+                    base_x_axis_marker_xyz = np.copy(m['x_axis'])
+                    base_y_axis_marker_xyz = np.copy(m['y_axis'])
+                    base_z_axis_marker_xyz = np.copy(m['z_axis'])
+                    
+                if name == 'docking_station':
+                    dock_center_marker_xyz = m['pos']
+                    dock_midline_marker_xyz = -m['y_axis']
+                    
+                    dock_origin_marker_xyz = np.copy(m['pos'])
+                    dock_x_axis_marker_xyz = np.copy(m['x_axis'])
+                    dock_y_axis_marker_xyz = np.copy(m['y_axis'])
+
+
+            dock_origin_marker_xyz, dock_x_axis_marker_xyz, dock_y_axis_marker_xyz = dock_coord_sys(dock_origin_marker_xyz,
+                                                                                                    dock_x_axis_marker_xyz, dock_y_axis_marker_xyz,
+                                                                                                    base_origin_marker_xyz, base_x_axis_marker_xyz,
+                                                                                                    base_y_axis_marker_xyz, base_z_axis_marker_xyz)
+
+            display_dock_coord_sys(dock_origin_marker_xyz, dock_x_axis_marker_xyz, dock_y_axis_marker_xyz, color_image, camera_info) 
+                        
             # compute and display image-based task-relevant features for visual servoing
-            base_center_xy, base_midline_xy = compute_visual_servoing_features(base_center_xyz, base_midline_xyz, camera_info)
+            base_center_xy, base_midline_xy = center_and_midline_in_image(base_center_marker_xyz, base_midline_marker_xyz, camera_info)
             display_visual_servoing_features(base_center_xy, base_midline_xy, color_image)
             
-            dock_center_xy, dock_midline_xy = compute_visual_servoing_features(dock_center_xyz, dock_midline_xyz, camera_info)
+            dock_center_xy, dock_midline_xy = center_and_midline_in_image(dock_center_marker_xyz, dock_midline_marker_xyz, camera_info)
             display_visual_servoing_features(dock_center_xy, dock_midline_xy, color_image)
 
             direction_err = 0.0
@@ -337,7 +462,8 @@ def main(exposure):
                         
                         
                 if behavior == 'move_to_predocking_position':
-                    pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
+                    #pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
+                    pre_docking_center_xy = pre_docking_center_2(dock_origin_marker_xyz, dock_y_axis_marker_xyz, camera_info)
                     pre_docking_midline_xy = dock_midline_xy
 
                     display_visual_servoing_features(pre_docking_center_xy, pre_docking_midline_xy, color_image)
