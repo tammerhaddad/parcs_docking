@@ -386,15 +386,6 @@ def main(exposure):
             base_midline_marker_xyz = None
             dock_center_marker_xyz = None
             dock_midline_marker_xyz = None
-
-            base_origin_marker_xyz = None
-            base_x_axis_marker_xyz = None
-            base_y_axis_marker_xyz = None
-            base_z_axis_marker_xyz = None
-                   
-            dock_origin_marker_xyz = None
-            dock_x_axis_marker_xyz = None
-            dock_y_axis_marker_xyz = None
             
             for k in markers:
                 m = markers[k]
