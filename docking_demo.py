@@ -29,7 +29,7 @@ successful_pre_docking_err_ang = 0.05
 successful_rotate_err_ang = 0.008 #0.01
 successful_pan_err = 0.2
 
-pre_docking_distance_m = 0.7 #0.55 #0.63 #0.5
+pre_docking_distance_m = 0.65 #0.7 #0.55 #0.63 #0.5
 
 ####################################
 ## Gains for Visual Servoing
@@ -94,24 +94,73 @@ vel_cmd_to_pos = { v:k for (k,v) in pos_to_vel_cmd.items() }
 
 ####################################
 
-class VisualServoingError:
+class ServoingError:
 
     def __init__(self):
-        self.direction_err = 0.0
-        self.distance_err = 0.0
-        self.pan_err = 0.0
+        self.direction = 0.0
+        self.distance = 0.0
+        self.pan = 0.0
+
+    def __str__(self):
+        return f'ServoingError: direction = {self.direction}, distance = {self.distance}, pan = {self.pan}'
 
         
 class Marker:
     def __init__(self, marker_dict):
-       
         self.origin = np.copy(marker_dict['pos'])
         self.x_axis = np.copy(marker_dict['x_axis'])
         self.y_axis = np.copy(marker_dict['y_axis'])
         self.z_axis = np.copy(marker_dict['z_axis'])
+
         
+class CoordSys:
+
+    def __init__(self, origin, x_axis, y_axis):
+        self.origin = origin
+        self.x_axis = x_axis
+        self.y_axis = y_axis
+
+    def point_in_image(self, dock_x_coord_m, dock_y_coord_m, camera_info):
+
+        point_xyz = (dock_x_coord_m * self.x_axis) + (dock_y_coord_m * self.y_axis) + self.origin
+        image_point_xy = dh.pixel_from_3d(point_xyz, camera_info)
+        return image_point_xy
         
-class DockCoordSys:
+    def vector_in_image(self, dock_x_coord_m, dock_y_coord_m, camera_info):
+        end_xy = self.point_in_image(dock_x_coord_m, dock_y_coord_m, camera_info)
+        start_xy = dh.pixel_from_3d(self.origin, camera_info)
+        vec_xy = end_xy - start_xy
+        return vec_xy
+
+    def draw(self, image, camera_info):
+
+        # Draw origin
+        origin_xy = dh.pixel_from_3d(self.origin, camera_info)
+        radius = 6
+        thickness = -1
+        color = [255, 0, 0]
+        origin_xy = np.round(origin_xy).astype(np.int32)
+        cv2.circle(image, origin_xy, radius, color, -1, lineType=cv2.LINE_AA)
+
+        start_xy = origin_xy
+        length_m = 0.15
+
+        # Draw x-axis in red
+        thickness = 2
+        color = [0, 0, 255]
+        end_xy = dh.pixel_from_3d(self.origin + (length_m * self.x_axis), camera_info)
+        end_xy = np.round(end_xy).astype(np.int32)
+        cv2.line(image, start_xy, end_xy, color, thickness, lineType=cv2.LINE_AA)
+
+        # Draw y-axis in green
+        thickness = 2
+        color = [0, 255, 0]
+        end_xy = dh.pixel_from_3d(self.origin + (length_m * self.y_axis), camera_info)
+        end_xy = np.round(end_xy).astype(np.int32)
+        cv2.line(image, start_xy, end_xy, color, thickness, lineType=cv2.LINE_AA)
+
+        
+class DockCoordSys(CoordSys):
 
     def __init__(self, dock_marker, base_marker):
 
@@ -131,14 +180,15 @@ class DockCoordSys:
         ####################################
 
         # The origin is the 3D origin of the docking station's ArUco marker
+        #self.origin = np.copy(dock_marker.origin) - (0.01 * dock_marker.y_axis)
         self.origin = np.copy(dock_marker.origin)
-
+        
         # The docking station's x-axis is the negative of the docking station's ArUco marker's x-axis
         self.x_axis = -dock_marker.x_axis
 
         # Find the docking station's y-axis by using its x-axis and the vector that connects the origins of the docking station's ArUco marker and the mobile base's ArUco marker. This should result in a less noisy estimate, as long as they are not parallel, which should be unlikely during docking and can be explicitly detected and excluded. 
 
-        diff = base_marker.origin - dock_marker.origin
+        diff = base_marker.origin - self.origin
         diff_mag = np.linalg.norm(diff)
         if diff_mag > 0.0: 
             diff = diff / diff_mag
@@ -154,75 +204,30 @@ class DockCoordSys:
         else:
             self.y_axis = None
 
-            
-    def point_in_image(self, dock_x_coord_m, dock_y_coord_m, camera_info):
+                   
+class BaseCoordSys(CoordSys):
 
-        point_xyz = (dock_x_coord_m * self.x_axis) + (dock_y_coord_m * self.y_axis) + self.origin
-        image_point_xy = dh.pixel_from_3d(point_xyz, camera_info)
-        return image_point_xy
+    def __init__(self, base_marker):
         
-        
-    def draw(self, image, camera_info):
+        ####################################
+        # This estimates a planar coordinate system for the mobile base that is used to define image-space objectives for visual servoing.
+        #
+        # The origin of the coordinate system is the center of rotation for the mobile base.
+        #
+        # The x and y axes for the coordinate system sit in the plane and are derived from the x and y axes of the ArUco marker mounted to the left front corner of the mobile base.
+        #
+        # The y-axis points along the midline of the mobile base towards the back of the robot
+        #
+        # The x-axis points to the right of the robot when you're looking at the the robot from the front.
+        #
+        # The x-axis and y-axis form a right-handed coordinate system where the z-axis is normal to the floor.
+        #
+        ####################################
 
-        # Draw origin
-        origin_xy = dh.pixel_from_3d(self.origin, camera_info)
-        radius = 6
-        thickness = -1
-        color = [255, 0, 0]
-        origin_xy = np.round(origin_xy).astype(np.int32)
-        cv2.circle(image, origin_xy, radius, color, -1, lineType=cv2.LINE_AA)
-
-        start_xy = origin_xy
-        length_m = 0.2
-
-        # Draw x-axis in red
-        thickness = 2
-        color = [0, 0, 255]
-        end_xy = dh.pixel_from_3d(self.origin + (length_m * self.x_axis), camera_info)
-        end_xy = np.round(end_xy).astype(np.int32)
-        cv2.line(image, start_xy, end_xy, color, thickness, lineType=cv2.LINE_AA)
-
-        # Draw y-axis in green
-        thickness = 2
-        color = [0, 255, 0]
-        end_xy = dh.pixel_from_3d(self.origin + (length_m * self.y_axis), camera_info)
-        end_xy = np.round(end_xy).astype(np.int32)
-        cv2.line(image, start_xy, end_xy, color, thickness, lineType=cv2.LINE_AA)
-
+        self.origin = base_marker.origin + ((0.13) * base_marker.x_axis)
+        self.y_axis = -base_marker.y_axis
+        self.x_axis = -base_marker.x_axis
             
-            
-class VisualServoingFeatures:
-
-    def __init__(self):
-        pass
-
-######################################
-# Naming conventions
-#
-# _marker_xyz is a three dimensional quantity derived from an ArUco marker
-# _xy is a two dimensional quantity defined with respect to the image
-#
-######################################
-
-def center_and_midline_in_image(center_marker_xyz, midline_marker_xyz, camera_info):
-    if (center_marker_xyz is None) or (midline_marker_xyz is None):
-        return None, None
-    
-    center_xy = dh.pixel_from_3d(center_marker_xyz, camera_info)
-    
-    length = 1.0
-    end_marker_xyz = center_marker_xyz + (length * midline_marker_xyz)
-    end_xy = dh.pixel_from_3d(end_marker_xyz, camera_info)
-    
-    midline_xy = (end_xy - center_xy)
-    midline_xy_mag = np.linalg.norm(midline_xy)
-    if midline_xy_mag > 0.0:
-        midline_xy = midline_xy / midline_xy_mag
-    else:
-        midline_xy = None
-
-    return center_xy, midline_xy
-
 
 def display_visual_servoing_features(center_xy, midline_xy, image, color=None, length=100.0):
     if (center_xy is None) or (midline_xy is None):
@@ -242,14 +247,6 @@ def display_visual_servoing_features(center_xy, midline_xy, image, color=None, l
     start = center
     end = np.round(center_xy + (length * midline_xy)).astype(np.int32)
     cv2.line(image, start, end, color, thickness, lineType=cv2.LINE_AA)
-    
-
-
-
-def pre_docking_center_2(dock_origin_marker_xyz, dock_y_axis_marker_xyz, camera_info):
-    pre_docking_center_marker_xyz = (pre_docking_distance_m * dock_y_axis_marker_xyz) + dock_origin_marker_xyz
-    pre_docking_center_xy = dh.pixel_from_3d(pre_docking_center_marker_xyz, camera_info)
-    return pre_docking_center_xy
 
 
 def vector_error(target, current):
@@ -276,36 +273,32 @@ def get_pix_per_m(camera_info):
     print(f'{pix_per_m=}')
     return pix_per_m
 
-def pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m):
-    # find the pre-docking waypoint
-    dist_pix = pix_per_m * pre_docking_distance_m
-    pre_docking_center_xy = dock_center_xy + (dist_pix * dock_midline_xy)
+
+def pre_docking_center(dock_origin_marker_xyz, dock_y_axis_marker_xyz, camera_info):
+    pre_docking_center_marker_xyz = (pre_docking_distance_m * dock_y_axis_marker_xyz) + dock_origin_marker_xyz
+    pre_docking_center_xy = dh.pixel_from_3d(pre_docking_center_marker_xyz, camera_info)
     return pre_docking_center_xy
 
-def docking_pose(base_center_xy, base_midline_xy, dock_center_xy, dock_midline_xy, pix_per_m):
-    pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
-    
-    center_diff_xy = base_center_xy - pre_docking_center_xy
-    dock_side_sign = np.sign(np.cross(dock_midline_xy, center_diff_xy))
-    if dock_side_sign < 0.0:
-        left_of_dock = False
-    else:
+
+def docking_pose(dock_coord_sys, base_coord_sys):
+    side = np.dot(dock_coord_sys.x_axis, base_coord_sys.origin - dock_coord_sys.origin)
+    if side > 0.0:
         left_of_dock = True
-
-    center_diff_xy = dock_center_xy - base_center_xy
-    center_diff_xy = center_diff_xy / np.linalg.norm(center_diff_xy)
-    if left_of_dock:
-        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, base_midline_xy))
-        facing_sign = np.dot(base_midline_xy, dock_midline_xy)
-    else: 
-        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, -base_midline_xy))
-        facing_sign = np.dot(-base_midline_xy, dock_midline_xy)
-
-    if (facing_sign > 0.0) and (abs_direction_err < (1.0 - np.cos(np.pi/2.0))):
-        facing_dock = True
     else:
-        facing_dock = False
-        
+        left_of_dock = False
+
+    front = np.dot(dock_coord_sys.x_axis, base_coord_sys.y_axis)
+    if left_of_dock: 
+        if front < 0.0:
+            facing_dock = True 
+        else:
+            facing_dock = False 
+    else:
+        if front < 0.0:
+            facing_dock = False
+        else:
+            facing_dock = True
+
     return facing_dock, left_of_dock
 
 
@@ -333,12 +326,228 @@ def move_to_initial_pose(robot):
     robot.wait_command()
         
 
+####################################################################
+# behaviors
+
+def look_for_markers(dock_coord_sys, base_coord_sys, servoing_error):
+    # The look_for_markers behavior holds the keeps the mobile base staionary while it pans the D435if head until it sees the dock and mobile base ArUco markers
+    servoing_error.distance = 0.0
+    servoing_error.direction = 0.0
+    servoing_error.pan = -2.0
+    next_behavior = 'look_for_markers'
+    if (dock_coord_sys is not None) and (base_coord_sys is not None):
+        facing_dock, left_of_dock = docking_pose(dock_coord_sys, base_coord_sys)
+        print(f'{facing_dock=}')
+        print(f'{left_of_dock=}')
+        if not left_of_dock:
+            # Sometimes there are false positives due to noise, so this should only print a warning.
+            #raise NotImplementedError('THE DOCKING DEMO DOES NOT YET WORK WHEN DOCKING FROM THE RIGHT SIDE OF THE DOCKING STATION.')
+            print('WARNING: THE DOCKING DEMO DOES NOT YET WORK WHEN DOCKING FROM THE RIGHT SIDE OF THE DOCKING STATION.')
+        if facing_dock:
+            next_behavior = 'rotate_to_predocking_position'
+        else: 
+            next_behavior = 'rotate_to_starting_pose'
+    return next_behavior
+
+
+def rotate_to_starting_pose(dock_coord_sys, base_coord_sys, camera_info, servoing_error):
+    servoing_error.distance = 0.0
+    servoing_error.direction = 0.0
+    
+    next_behavior = 'rotate_to_starting_pose'
+    
+    dock_center_xy = dock_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    base_center_xy = base_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    center_diff_xy = dock_center_xy - base_center_xy
+    center_diff_xy = center_diff_xy / np.linalg.norm(center_diff_xy)
+
+    base_midline_xy = base_coord_sys.vector_in_image(0.0, 1.0, camera_info)
+    base_midline_xy = base_midline_xy / np.linalg.norm(base_midline_xy)
+                                                       
+    facing_dock, left_of_dock = docking_pose(dock_coord_sys, base_coord_sys)
+    if facing_dock:
+        next_behavior = 'rotate_to_predocking_position'
+        
+    if left_of_dock:
+        servoing_error.direction = 1.0
+    else:
+        servoing_error.direction = -1.0
+
+    return next_behavior
+
+
+def keep_markers_in_view(dock_coord_sys, base_coord_sys, camera_info, servoing_error):
+    dock_center_xy = dock_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    base_center_xy = base_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    pan_goal = dock_center_xy - base_center_xy
+    pan_goal = pan_goal / np.linalg.norm(pan_goal)
+    pan_curr = np.array([1.0, 0.0])
+    servoing_error.pan = vector_error(pan_goal, pan_curr)
+    if abs(servoing_error.pan) < successful_pan_err:
+        servoing_error.pan = 0.0
+
+
+def rotate_to_predocking_position(dock_coord_sys, base_coord_sys, camera_info, color_image, servoing_error):
+    servoing_error.distance = 0.0
+    servoing_error.direction = 0.0
+    
+    next_behavior = 'rotate_to_predocking_position'
+    
+    facing_dock, left_of_dock = docking_pose(dock_coord_sys, base_coord_sys)
+    print(f'{facing_dock=}')
+    print(f'{left_of_dock=}')
+
+    #pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
+
+    base_center_xy = base_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    base_midline_xy = base_coord_sys.vector_in_image(0.0, 1.0, camera_info)
+    base_midline_xy = base_midline_xy / np.linalg.norm(base_midline_xy)
+
+    dock_center_xy = dock_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    dock_midline_xy = dock_coord_sys.vector_in_image(0.0, 1.0, camera_info)
+    dock_midline_xy = dock_midline_xy / np.linalg.norm(dock_midline_xy)
+    
+    pre_docking_center_xy = pre_docking_center(dock_coord_sys.origin, dock_coord_sys.y_axis, camera_info)
+    pre_docking_center_xy = dock_coord_sys.point_in_image(0.0, pre_docking_distance_m, camera_info)
+    pre_docking_midline_xy = dock_midline_xy
+
+    display_visual_servoing_features(pre_docking_center_xy, pre_docking_midline_xy, color_image)
+
+    # find error to the pre-docking waypoint location
+    direction = pre_docking_center_xy - base_center_xy
+
+    display_visual_servoing_features(base_center_xy, direction, color_image, [0,0,255], 1.0)
+
+    distance = np.linalg.norm(direction)
+    if distance > 0.0:
+        direction = direction / distance
+
+    direction_success = False
+
+    if left_of_dock: 
+        servoing_error.direction = vector_error(direction, base_midline_xy)
+    else:
+        servoing_error.direction = vector_error(direction, -base_midline_xy)
+            
+    if abs(servoing_error.direction) < (2.0 * successful_rotate_err_ang):
+        servoing_error.direction = 0.0
+        next_behavior = 'move_to_predocking_position'
+
+    return next_behavior
+
+
+def move_to_predocking_position(dock_coord_sys, base_coord_sys, camera_info, color_image, servoing_error):
+    servoing_error.distance = 0.0
+    servoing_error.direction = 0.0
+    
+    next_behavior = 'move_to_predocking_position'
+    
+    facing_dock, left_of_dock = docking_pose(dock_coord_sys, base_coord_sys)
+    print(f'{facing_dock=}')
+    print(f'{left_of_dock=}')
+
+    #pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
+
+    base_center_xy = base_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    base_midline_xy = base_coord_sys.vector_in_image(0.0, 1.0, camera_info)
+    base_midline_xy = base_midline_xy / np.linalg.norm(base_midline_xy)
+
+    dock_center_xy = dock_coord_sys.point_in_image(0.0, 0.0, camera_info)
+    dock_midline_xy = dock_coord_sys.vector_in_image(0.0, 1.0, camera_info)
+    dock_midline_xy = dock_midline_xy / np.linalg.norm(dock_midline_xy)
+    
+    pre_docking_center_xy = pre_docking_center(dock_coord_sys.origin, dock_coord_sys.y_axis, camera_info)
+    pre_docking_center_xy = dock_coord_sys.point_in_image(0.0, pre_docking_distance_m, camera_info)
+    pre_docking_midline_xy = dock_midline_xy
+
+    display_visual_servoing_features(pre_docking_center_xy, pre_docking_midline_xy, color_image)
+
+    # find error to the pre-docking waypoint location
+    direction = pre_docking_center_xy - base_center_xy
+
+    display_visual_servoing_features(base_center_xy, direction, color_image, [0,0,255], 1.0)
+
+    distance = np.linalg.norm(direction)
+    if distance > 0.0:
+        direction = direction / distance
+
+    distance_success = False
+    direction_success = False
+
+    if left_of_dock: 
+        servoing_error.distance = distance
+    else:
+        servoing_error.distance = -distance
+
+    # This needs work
+    pix_per_m = get_pix_per_m(camera_info)
+    if abs(servoing_error.distance) < (pix_per_m * successful_pre_docking_err_m):
+        servoing_error.distance = 0.0
+        distance_success = True
+
+    if not distance_success:
+        if left_of_dock: 
+            servoing_error.direction = vector_error(direction, base_midline_xy)
+        else:
+            servoing_error.direction = vector_error(direction, -base_midline_xy)
+        if (abs(servoing_error.direction) < successful_pre_docking_err_ang):
+            servoing_error.direction = 0.0
+            direction_success = True
+    else:
+        servoing_error.direction = 0.0
+        direction_success = True
+
+    if direction_success and distance_success:
+        next_behavior = 'rotate_for_docking'
+
+    return next_behavior
+
+
+def rotate_for_docking(dock_coord_sys, base_coord_sys, camera_info, servoing_error):
+    servoing_error.distance = 0.0
+    servoing_error.direction = 0.0
+    next_behavior = 'rotate_for_docking'
+
+    base_midline_xy = base_coord_sys.vector_in_image(0.0, 1.0, camera_info)
+    base_midline_xy = base_midline_xy / np.linalg.norm(base_midline_xy)
+
+    dock_midline_xy = dock_coord_sys.vector_in_image(0.0, 1.0, camera_info)
+    dock_midline_xy = dock_midline_xy / np.linalg.norm(dock_midline_xy)
+
+    # find rotational error to make the base midline parallel to the pre-docking direction
+    parallel_err = vector_error(-dock_midline_xy, base_midline_xy)
+    servoing_error.direction = 2.0 * parallel_err
+    if abs(servoing_error.direction) < successful_rotate_err_ang:
+        servoing_error.direction = 0.0
+        next_behavior = 'back_into_dock'
+
+    return next_behavior
+
+
+def back_into_dock(joint_state, servoing_error):
+    # The back_into_dock behavior slowly drives backwards until the battery charging status is true. It currently drives backwards without any visual feedback. It also does not currently handle failure conditions. In the future, it would be good for it to at least have a timeout. It might also check for the distance traveled and drive wheel effort. When the mobile base is close to being fully docked, the robot's shoulder occludes the docking station's ArUco marker from the view of the D435if head camera.  
+    servoing_error.distance = 0.0
+    servoing_error.direction = 0.0
+    servoing_error.pan = 0.0
+    next_behavior = 'back_into_dock'
+    
+    battery_charging = joint_state['battery_charging']
+    print()
+    print(f'{battery_charging=}')
+    if battery_charging:
+        print('FINISHED DOCKING!')
+        next_behavior = 'docked'
+    else:
+        servoing_error.distance = 100.0
+
+    return next_behavior
+
+####################################################################
+
+
 def main(exposure):
 
     try:
-        pix_per_m_av = None
-        pix_per_m_n = 0
-        
         camera = dc.D435i(exposure=exposure)
 
         time.sleep(1.0)
@@ -353,17 +562,12 @@ def main(exposure):
 
         aruco_detector = ad.ArucoDetector(marker_info=marker_info, show_debug_images=True, use_apriltag_refinement=False, brighten_images=True)
 
-        first_frame = True
-
         controller = nvc.NormalizedVelocityControl(robot)
         controller.reset_base_odometry()
         
         loop_timer = lt.LoopTimer()
 
-        behaviors = ['look_for_markers', 'rotate_to_starting_pose', 'move_to_predocking_position', 'rotate_for_docking', 'back_into_dock', 'docked']
         behavior = 'look_for_markers'
-        facing_dock = None
-        left_of_dock = None
 
         while behavior != 'docked':
             print('_______________________________________')
@@ -382,42 +586,25 @@ def main(exposure):
             base_marker = None
             dock_marker = None
 
-            base_center_marker_xyz = None
-            base_midline_marker_xyz = None
-            dock_center_marker_xyz = None
-            dock_midline_marker_xyz = None
-            
             for k in markers:
                 m = markers[k]
                 name = m['info']['name']
                 if name == 'base_left':
-                    base_center_marker_xyz = m['pos'] + ((0.13) * m['x_axis'])
-                    base_midline_marker_xyz = -m['y_axis']
-
                     base_marker = Marker(m)
-                    
                 if name == 'docking_station':
-                    dock_center_marker_xyz = m['pos']
-                    dock_midline_marker_xyz = -m['y_axis']
-
                     dock_marker = Marker(m)
                     
             dock_coord_sys = None
             if (base_marker is not None) and (dock_marker is not None):
                 dock_coord_sys = DockCoordSys(dock_marker, base_marker)
                 dock_coord_sys.draw(color_image, camera_info)
-                      
-            # compute and display image-based task-relevant features for visual servoing
-            base_center_xy, base_midline_xy = center_and_midline_in_image(base_center_marker_xyz, base_midline_marker_xyz, camera_info)
-            display_visual_servoing_features(base_center_xy, base_midline_xy, color_image)
-            
-            dock_center_xy, dock_midline_xy = center_and_midline_in_image(dock_center_marker_xyz, dock_midline_marker_xyz, camera_info)
-            display_visual_servoing_features(dock_center_xy, dock_midline_xy, color_image)
 
-            direction_err = 0.0
-            distance_err = 0.0
-            pan_err = 0.0
+            base_coord_sys = None
+            if base_marker is not None:
+                base_coord_sys = BaseCoordSys(base_marker)
+                base_coord_sys.draw(color_image, camera_info)
 
+            servoing_error = ServoingError()
             joint_state = controller.get_joint_state()
             # convert base odometry angle to be in the range -pi to pi
             joint_state['base_odom_theta'] = hm.angle_diff_rad(joint_state['base_odom_theta'], 0.0)
@@ -425,121 +612,47 @@ def main(exposure):
             print(f'{behavior=}')
                 
             if behavior == 'look_for_markers':
-                #errors = look_for_markers(visual_features)
-                pan_err = -2.0
-                if (base_center_xy is not None) and (base_midline_xy is not None) and (dock_center_xy is not None) and (dock_midline_xy is not None):
-                    facing_dock, left_of_dock = docking_pose(base_center_xy, base_midline_xy, dock_center_xy, dock_midline_xy, pix_per_m)
-                    print(f'{facing_dock=}')
-                    print(f'{left_of_dock=}')
-                    if not left_of_dock:
-                        raise NotImplementedError('THE DOCKING DEMO DOES NOT YET WORK WHEN DOCKING FROM THE RIGHT SIDE OF THE DOCKING STATION.')
-                    if facing_dock:
-                        behavior = 'move_to_predocking_position'
-                    else: 
-                        behavior = 'rotate_to_starting_pose'
+                
+                behavior = look_for_markers(dock_coord_sys, base_coord_sys, servoing_error)
+                
             elif behavior == 'back_into_dock':
-                battery_charging = joint_state['battery_charging']
-                print()
-                print(f'{battery_charging=}')
-                if battery_charging:
-                    print('FINISHED DOCKING!')
-                    behavior = 'docked'
-                else:
-                    distance_err = 100.0
-            elif (dock_coord_sys is not None) and (base_center_xy is not None) and (base_midline_xy is not None) and (dock_center_xy is not None) and (dock_midline_xy is not None):
-                pan_goal = dock_center_xy - base_center_xy
-                pan_goal = pan_goal / np.linalg.norm(pan_goal)
-                pan_curr = np.array([1.0, 0.0])
-                pan_err = vector_error(pan_goal, pan_curr)
-                if abs(pan_err) < successful_pan_err:
-                    pan_err = 0.0
+                
+                behavior = back_into_dock(joint_state, servoing_error)
+                
+            elif (dock_coord_sys is not None) and (base_coord_sys is not None): 
+
+                keep_markers_in_view(dock_coord_sys, base_coord_sys, camera_info, servoing_error)
 
                 if behavior == 'rotate_to_starting_pose':
-                    center_diff_xy = dock_center_xy - base_center_xy
-                    center_diff_xy = center_diff_xy / np.linalg.norm(center_diff_xy)
-                                                        
-                    if left_of_dock:
-                        abs_direction_err = abs(1.0 - np.dot(center_diff_xy, base_midline_xy))
-                        direction_err = 1.0
-                    else:
-                        abs_direction_err = abs(1.0 - np.dot(-center_diff_xy, base_midline_xy))
-                        direction_err = -1.0
 
-                    print(f'{abs_direction_err=}')
-                    if abs_direction_err < (1.0 - np.cos(np.pi/2.0)):
-                        direction_err = 0.0
-                        behavior = 'move_to_predocking_position'
-                        
-                        
+                    behavior = rotate_to_starting_pose(dock_coord_sys, base_coord_sys, camera_info, servoing_error)
+
+                if behavior == 'rotate_to_predocking_position':
+
+                    behavior = rotate_to_predocking_position(dock_coord_sys, base_coord_sys, camera_info, color_image, servoing_error)
+                
                 if behavior == 'move_to_predocking_position':
-                    #pre_docking_center_xy = pre_docking_center(dock_center_xy, dock_midline_xy, pix_per_m)
 
-                    #pre_docking_center_xy = pre_docking_center_2(dock_origin_marker_xyz, dock_y_axis_marker_xyz, camera_info)
-                    pre_docking_center_xy = dock_coord_sys.point_in_image(0.0, pre_docking_distance_m, camera_info)
-                    pre_docking_midline_xy = dock_midline_xy
-
-                    display_visual_servoing_features(pre_docking_center_xy, pre_docking_midline_xy, color_image)
-
-                    # find error to the pre-docking waypoint location
-                    direction = pre_docking_center_xy - base_center_xy
-
-                    display_visual_servoing_features(base_center_xy, direction, color_image, [0,0,255], 1.0)
-
-                    distance = np.linalg.norm(direction)
-                    if distance > 0.0:
-                        direction = direction / distance
-
-                    distance_success = False
-                    direction_success = False
-
-                    if left_of_dock: 
-                        distance_err = distance
-                    else:
-                        distance_err = -distance
-                        
-                    if abs(distance_err) < (pix_per_m * successful_pre_docking_err_m):
-                        distance_err = 0.0
-                        distance_success = True
-
-                    if not distance_success:
-                        if left_of_dock: 
-                            direction_err = vector_error(direction, base_midline_xy)
-                        else:
-                            direction_err = vector_error(direction, -base_midline_xy)
-                        if (abs(direction_err) < successful_pre_docking_err_ang):
-                            direction_err = 0.0
-                            direction_success = True
-                    else:
-                        direction_err = 0.0
-                        direction_success = True
-                        
-                    if direction_success and distance_success:
-                        behavior = 'rotate_for_docking'
+                    behavior = move_to_predocking_position(dock_coord_sys, base_coord_sys, camera_info, color_image, servoing_error)
 
                 elif behavior == 'rotate_for_docking':
-                    # find rotational error to make the base midline parallel to the pre-docking direction
-                    parallel_err = vector_error(-dock_midline_xy, base_midline_xy)
-                    direction_err = 2.0 * parallel_err
-                    if abs(direction_err) < successful_rotate_err_ang:
-                        direction_err = 0.0
-                        behavior = 'back_into_dock'
+
+                    behavior = rotate_for_docking(dock_coord_sys, base_coord_sys, camera_info, servoing_error)
+
+            # Set joint velocities based on the servoing error
+            print()
+            print(servoing_error)
 
             print()
-            print('visual servoing errors')
-            print(f'{direction_err=}')
-            print(f'{distance_err=}')
-            print(f'{pan_err=}')
-
-            print()
-            base_rotational_velocity = direction_err
+            base_rotational_velocity = servoing_error.direction
             if abs(base_rotational_velocity) < min_base_speed:
                 base_rotational_velocity = 0.0
 
-            base_translational_velocity = -distance_err
+            base_translational_velocity = -servoing_error.distance
             if abs(base_translational_velocity) < min_base_speed:
                 base_translational_velocity = 0.0
 
-            head_pan_velocity = -pan_err
+            head_pan_velocity = -servoing_error.pan
 
             cmd = {}
             cmd['base_forward'] = base_translational_velocity
