@@ -3,7 +3,7 @@ import d405_helpers as dh
 import numpy as np
 import cv2
 import normalized_velocity_control as nvc
-import stretch_body.robot as rb
+# import stretch_body.robot as rb
 import time
 import aruco_detector as ad
 import yaml
@@ -301,30 +301,43 @@ def docking_pose(dock_coord_sys, base_coord_sys):
 
     return facing_dock, left_of_dock
 
+# old move to inital pose using robot
+# def move_to_initial_pose(robot):
+#     robot.head.move_to('head_pan', initial_joint_state['head_pan_pos'])
+#     robot.head.move_to('head_tilt', initial_joint_state['head_tilt_pos'])
+#     robot.push_command()
+#     robot.wait_command()
 
-def move_to_initial_pose(robot):
-    robot.head.move_to('head_pan', initial_joint_state['head_pan_pos'])
-    robot.head.move_to('head_tilt', initial_joint_state['head_tilt_pos'])
-    robot.push_command()
-    robot.wait_command()
+#     robot.end_of_arm.get_joint('wrist_yaw').move_to(initial_joint_state['wrist_yaw_pos'])
+#     robot.end_of_arm.get_joint('wrist_pitch').move_to(initial_joint_state['wrist_pitch_pos'])
+#     robot.push_command()
+#     robot.wait_command()
 
-    robot.end_of_arm.get_joint('wrist_yaw').move_to(initial_joint_state['wrist_yaw_pos'])
-    robot.end_of_arm.get_joint('wrist_pitch').move_to(initial_joint_state['wrist_pitch_pos'])
-    robot.push_command()
-    robot.wait_command()
+#     robot.arm.move_to(initial_joint_state['arm_pos'])
+#     robot.push_command()
+#     robot.wait_command()
 
-    robot.arm.move_to(initial_joint_state['arm_pos'])
-    robot.push_command()
-    robot.wait_command()
+#     robot.lift.move_to(initial_joint_state['lift_pos'])
+#     robot.push_command()
+#     robot.wait_command()
 
-    robot.lift.move_to(initial_joint_state['lift_pos'])
-    robot.push_command()
-    robot.wait_command()
+#     robot.end_of_arm.get_joint('stretch_gripper').move_to(initial_joint_state['gripper_pos'])
+#     robot.push_command()
+#     robot.wait_command()
 
-    robot.end_of_arm.get_joint('stretch_gripper').move_to(initial_joint_state['gripper_pos'])
-    robot.push_command()
-    robot.wait_command()
-        
+# new initial pose using hello_node
+def move_to_initial_pose(hello_node):
+    self.hello_node.switch_to_position_mode()
+    self.hello_node.move_to_pose(
+        'joint_head_tilt': float(0), 
+        'joint_head_pan': float(initial_joint_state['head_pan_pos']),
+        # idk the names of these joints
+        # 'joint_lift': float(initial_joint_state['lift_pos']),
+        # 'joint_arm': float(initial_joint_state['arm_pos']),
+        # 'joint_wrist_yaw': float(initial_joint_state['wrist_yaw_pos']),
+        # 'joint_wrist_pitch': float(initial_joint_state['wrist_pitch_pos']),
+        # 'joint_gripper': float(initial_joint_state['gripper_pos'])
+    )
 
 ####################################################################
 # behaviors
@@ -552,9 +565,10 @@ def main(exposure):
 
         time.sleep(1.0)
         
-        robot = rb.Robot()
-        robot.startup()
-        move_to_initial_pose(robot)
+        hello_node = hm.HelloNode.quick_create("docking_demo")
+        # robot = rb.Robot()
+        # robot.startup()
+        move_to_initial_pose(hello_node)
 
         marker_info = {}
         with open('aruco_marker_info.yaml') as f:
@@ -562,7 +576,7 @@ def main(exposure):
 
         aruco_detector = ad.ArucoDetector(marker_info=marker_info, show_debug_images=True, use_apriltag_refinement=False, brighten_images=True)
 
-        controller = nvc.NormalizedVelocityControl(robot)
+        controller = nvc.NormalizedVelocityControl(hello_node)
         controller.reset_base_odometry()
         
         loop_timer = lt.LoopTimer()
