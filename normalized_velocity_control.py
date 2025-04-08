@@ -6,13 +6,11 @@ import threading
 
 import time
 
-from geometry_msgs.msg import Twist
-from hello_helpers import hello_misc as hm
 
 ###################################################################
 # Derived from gamepad_joints.py
 
-class CommandBase(Node):
+class CommandBase:
     def __init__(self):
         """Base motion command class
         """
@@ -31,9 +29,6 @@ class CommandBase(Node):
         # Precision mode params
         self.precision_max_linear_vel = 0.02 # m/s Very precise: 0.01
         self.precision_max_rot_vel = 0.08 # rad/s Very precise: 0.04
-
-        self.vel_pub = self.create_publisher(Twist, 'stretch/cmd_vel', 10)
-        self.publish_twist = lambda self, v_m, w_r: self.vel_pub.publish(Twist(linear={'x': v_m}, angular={'z': w_r}))
     
     def command_stick_to_motion(self, x, y, robot):
         """Convert a stick axis value to robot base's tank driving motion.
@@ -55,9 +50,7 @@ class CommandBase(Node):
             self.start_pos = None
             self.start_theta = None
             v_m, w_r = self._process_stick_to_vel(x,y, robot)
-            # robot.base.set_velocity(v_m, w_r, a=self.acc)
-            # Publish the velocity command-------------------------------------------------------------
-            self.publish_twist(v_m, w_r)
+            robot.base.set_velocity(v_m, w_r, a=self.acc)
             self._prev_set_vel_ts = time.time()
         else:
         # Precision Mode
@@ -209,7 +202,7 @@ class CommandLift:
             v_m = -1*v_m
         return v_m
     
-    def _step_precision_move(self, xv, robot):
+    def _step_precision_move(self,xv, robot):
         # Read the current joint position
         current_position = robot.lift.status['pos']
 
@@ -461,11 +454,10 @@ zero_vel = {
 
 
 class NormalizedVelocityControl():
-    def __init__(self, hello_node):
-        self.hello = hello_node
-        # self.robot = robot
-        # if not self.robot.is_homed():
-        #     print('WARNING from NormalizedVelocityControl: Robot reporting it is not calibrated!')
+    def __init__(self, robot):
+        self.robot = robot
+        if not self.robot.is_homed():
+            print('WARNING from NormalizedVelocityControl: Robot reporting it is not calibrated!')
         self.precision_mode = False
         self.fast_base_mode = False
         self.base_command = CommandBase()
@@ -506,12 +498,10 @@ class NormalizedVelocityControl():
             self.command['cmd'] = cmd.copy()
             self.new_command_received = True
 
-    # TODO
     def reset_base_odometry(self):
         with self.lock:
             self.robot.base.reset_odometry()
-
-    # TODO 
+            
     def get_joint_state(self):
         with self.lock:
             
@@ -596,6 +586,7 @@ class NormalizedVelocityControl():
         self.controller_thread = threading.Thread(target=self.controller_loop, daemon=True)
         self.controller_thread.start()
         
+        
     def _update_modes(self):
         self.arm_command.precision_mode = self.precision_mode
         self.lift_command.precision_mode = self.precision_mode
@@ -609,14 +600,14 @@ class NormalizedVelocityControl():
         self.head_tilt_command.precision_mode = self.precision_mode
             
     def _safety_stop(self):
-        self.wirst_yaw_command.command_stick_to_motion(0, self.hello_node)
-        self.arm_command.command_stick_to_motion(0, self.hello_node)
-        self.lift_command.command_stick_to_motion(0, self.hello_node)
-        self.head_pan_command.command_stick_to_motion(0, self.hello_node)
-        self.head_tilt_command.command_stick_to_motion(0, self.hello_node)
-        self.base_command.command_stick_to_motion(0,0, self.hello_node)
-        self.wrist_pitch_command.command_stick_to_motion(0, self.hello_node)
-        self.wrist_roll_command.command_stick_to_motion(0, self.hello_node)
+        self.wirst_yaw_command.command_stick_to_motion(0, self.robot)
+        self.arm_command.command_stick_to_motion(0, self.robot)
+        self.lift_command.command_stick_to_motion(0, self.robot)
+        self.head_pan_command.command_stick_to_motion(0, self.robot)
+        self.head_tilt_command.command_stick_to_motion(0, self.robot)
+        self.base_command.command_stick_to_motion(0,0, self.robot)
+        self.wrist_pitch_command.command_stick_to_motion(0, self.robot)
+        self.wrist_roll_command.command_stick_to_motion(0, self.robot)
 
         
     def _execute(self, norm_vel_cmd):
@@ -637,47 +628,47 @@ class NormalizedVelocityControl():
                     vf = bound_norm_vel(cmd['base_forward'])
                 if 'base_counterclockwise' in cmd:
                     vcc = bound_norm_vel(cmd['base_counterclockwise'])        
-                self.base_command.command_stick_to_motion(vcc,  vf, self.hello_node)
+                self.base_command.command_stick_to_motion(vcc,  vf, self.robot)
 
             # Lift Control
             if 'lift_up' in cmd:
                 v = bound_norm_vel(cmd['lift_up'])        
-                self.lift_command.command_stick_to_motion(v,self.hello_node)
+                self.lift_command.command_stick_to_motion(v,self.robot)
 
             # Arm Control
             if 'arm_out' in cmd: 
                 v = bound_norm_vel(cmd['arm_out'])        
-                self.arm_command.command_stick_to_motion(v, self.hello_node)
+                self.arm_command.command_stick_to_motion(v, self.robot)
 
 
             # Dex Wrist Control
             if 'wrist_roll_counterclockwise' in cmd: 
                 v = bound_norm_vel(cmd['wrist_roll_counterclockwise'])
-                self.wrist_roll_command.command_stick_to_motion(v, self.hello_node)
+                self.wrist_roll_command.command_stick_to_motion(v, self.robot)
 
             if 'wrist_pitch_up' in cmd: 
                 v = bound_norm_vel(cmd['wrist_pitch_up'])
-                self.wrist_pitch_command.command_stick_to_motion(v, self.hello_node)
+                self.wrist_pitch_command.command_stick_to_motion(v, self.robot)
 
             if 'wrist_yaw_counterclockwise' in cmd: 
                 v = bound_norm_vel(cmd['wrist_yaw_counterclockwise'])
-                self.wirst_yaw_command.command_stick_to_motion(v, self.hello_node)
+                self.wirst_yaw_command.command_stick_to_motion(v, self.robot)
 
 
             # Head Control
             if 'head_tilt_up' in cmd: 
                 v = bound_norm_vel(cmd['head_tilt_up'])
-                self.head_tilt_command.command_stick_to_motion(v, self.hello_node)
+                self.head_tilt_command.command_stick_to_motion(v, self.robot)
 
             if 'head_pan_counterclockwise' in cmd:
                 v = bound_norm_vel(cmd['head_pan_counterclockwise'])        
-                self.head_pan_command.command_stick_to_motion(v, self.hello_node)
+                self.head_pan_command.command_stick_to_motion(v, self.robot)
 
 
             # Gripper Control
             if 'gripper_open' in cmd: 
                 v = bound_norm_vel(cmd['gripper_open'])
-                self.gripper.command_stick_to_motion(v, self.hello_node)
+                self.gripper.command_stick_to_motion(v, self.robot)
                 #self.gripper.gripper(v, self.robot)
 
             self.robot.push_command()
