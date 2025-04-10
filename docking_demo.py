@@ -3,6 +3,7 @@ import d405_helpers as dh
 import numpy as np
 import cv2
 import normalized_velocity_control as nvc
+# OLD
 import stretch_body.robot as rb
 import time
 import aruco_detector as ad
@@ -12,7 +13,11 @@ from hello_helpers import hello_misc as hm
 import argparse
 import loop_timer as lt
 import pprint as pp
+import rclpy
+from rclpy.node import Node
+from rclpy.action import ActionServer
 
+from trh_msgs.action import StringAction
 
 ####################################
 # Miscellaneous Parameters
@@ -544,8 +549,7 @@ def back_into_dock(joint_state, servoing_error):
 
 ####################################################################
 
-
-def main(exposure):
+def run(exposure):
 
     try:
         camera = dc.D435i(exposure=exposure)
@@ -687,6 +691,38 @@ def main(exposure):
     finally:
 
         robot.stop()
+
+class DockingActionServer(Node):
+
+    def __init__(self, exposure):
+        super().__init__('docking_action_server')
+        self._action_server = ActionServer(
+            self,
+            StringAction,  # Replace with your custom action if needed
+            'docking_action',
+            self.execute_callback
+        )
+
+    async def execute_callback(self, goal_handle):
+        self.get_logger().info('Executing docking action...')
+        try:
+            run(goal_handle.request.exposure)  # Pass exposure if needed
+            goal_handle.succeed()
+            return StringAction.Result(success=True, strresult="Docking completed successfully.")
+        except Exception as e:
+            self.get_logger().error(f'Docking failed: {e}')
+            goal_handle.abort()
+            return StringAction.Result(success=False, strresult=f"Docking failed: {e}")
+        
+def main(args=None):
+    rclpy.init(args=args)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-e', '--exposure', type=str, required=True, help='Exposure setting for the D435 camera')
+    parsed_args = parser.parse_args()
+    node = DockingActionServer(parsed_args.exposure)
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     
