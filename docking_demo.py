@@ -3,7 +3,6 @@ import d405_helpers as dh
 import numpy as np
 import cv2
 import normalized_velocity_control as nvc
-# OLD
 import stretch_body.robot as rb
 import time
 import aruco_detector as ad
@@ -13,11 +12,10 @@ from hello_helpers import hello_misc as hm
 import argparse
 import loop_timer as lt
 import pprint as pp
+from trh_msgs.action import StringAction
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
-
-from trh_msgs.action import StringAction
 
 ####################################
 # Miscellaneous Parameters
@@ -549,6 +547,7 @@ def back_into_dock(joint_state, servoing_error):
 
 ####################################################################
 
+
 def run(exposure):
 
     try:
@@ -561,7 +560,7 @@ def run(exposure):
         move_to_initial_pose(robot)
 
         marker_info = {}
-        with open('aruco_marker_info.yaml') as f:
+        with open('/home/tammerhaddad/ament_ws/src/parcs_docking/aruco_marker_info.yaml') as f:
             marker_info = yaml.load(f, Loader=SafeLoader)
 
         aruco_detector = ad.ArucoDetector(marker_info=marker_info, show_debug_images=True, use_apriltag_refinement=False, brighten_images=True)
@@ -692,6 +691,8 @@ def run(exposure):
 
         robot.stop()
 
+
+
 class DockingActionServer(Node):
 
     def __init__(self, exposure):
@@ -702,24 +703,22 @@ class DockingActionServer(Node):
             'docking_action',
             self.execute_callback
         )
+        self.exposure = exposure
 
     async def execute_callback(self, goal_handle):
         self.get_logger().info('Executing docking action...')
         try:
-            run(goal_handle.request.exposure)  # Pass exposure if needed
+            run(self.exposure)  # Pass exposure if needed
             goal_handle.succeed()
-            return StringAction.Result(success=True, strresult="Docking completed successfully.")
+            return StringAction.Result(strresult="Docking completed successfully.")
         except Exception as e:
             self.get_logger().error(f'Docking failed: {e}')
             goal_handle.abort()
             return StringAction.Result(success=False, strresult=f"Docking failed: {e}")
         
-def main(args=None):
-    rclpy.init(args=args)
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-e', '--exposure', type=str, required=True, help='Exposure setting for the D435 camera')
-    parsed_args = parser.parse_args()
-    node = DockingActionServer(parsed_args.exposure)
+def main(exposure):
+    rclpy.init(args=None)
+    node = DockingActionServer(exposure)
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
